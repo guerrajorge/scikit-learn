@@ -459,7 +459,7 @@ class _GMMBase(BaseEstimator):
         """
         return self._fit(X, y).argmax(axis=1)
 
-    def _fit(self, X, user, activity, data_dir, quickrun, logger, y=None, do_prediction=False):
+    def _fit(self, X, user, activity, data_dir, quickrun, logger, index, y=None, do_prediction=False):
         """Estimate model parameters with the EM algorithm.
 
         A initialization step is performed before entering the
@@ -506,6 +506,10 @@ class _GMMBase(BaseEstimator):
             # list all the files where the sensordata is stored
             kmeans_cov_dir = data_dir
 
+            # need to changed it to this format because if try to look for the string pattern by itself
+            # it will always find a number
+            index_string_parameters = '_' + index + '_'
+
             if 'm' in self.init_params or not hasattr(self, "means_"):
 
                 if quickrun:
@@ -514,7 +518,7 @@ class _GMMBase(BaseEstimator):
                         # if file with the same activity exists, do not run kmeans
                         for data_file in dataset_files:
                             if ('.npy' not in data_file) and (activity in data_file) and (user in data_file) and \
-                                    ('kmeans' in data_file):
+                                    ('kmeans' in data_file) and (index_string_parameters in data_file):
                                 run_kmeans_cov = False
                                 filename = data_file
                                 filepath = os.path.join(kmeans_cov_dir, filename)
@@ -528,8 +532,8 @@ class _GMMBase(BaseEstimator):
                     logger.getLogger('tab.regular.time').info('finished training k-means model')
 
                     if quickrun:
-                        filename = 'kmeans' + '_' + user + '_' + activity + '_' + datetime.now().strftime(
-                            '%Y%m%d%H%M%S')
+                        filename = 'kmeans' + '_' + user + '_' + activity + '_' + index + '_' + \
+                                   datetime.now().strftime('%Y%m%d%H%M%S')
                         logger.getLogger('tab.regular.time').info('kmeans object saved as {0}'.format(filename))
                         # save the file
                         filepath = os.path.join(kmeans_cov_dir, filename)
@@ -567,7 +571,7 @@ class _GMMBase(BaseEstimator):
                     if quickrun:
                         if not os.path.exists(kmeans_cov_dir):
                             os.mkdir(kmeans_cov_dir)
-                        joblib.dump(cv, n_filename)
+                        joblib.dump(self.weights_, n_filename)
 
                 if self.verbose > 1:
                     print('\tWeights have been initialized.')
@@ -579,7 +583,7 @@ class _GMMBase(BaseEstimator):
 
                 if run_kmeans_cov:
                     logger.getLogger('tab.regular.time').info('starting calculating covariances')
-                    cv = np.cov(X.T)
+                    cv = np.cov(X[:].T)
                     logger.getLogger('tab.regular.time').info('finished calculating covariances')
                     if quickrun:
                         if not os.path.exists(kmeans_cov_dir):
@@ -664,7 +668,7 @@ class _GMMBase(BaseEstimator):
 
         return responsibilities
 
-    def fit(self, X, user='', activity='', data_dir='', quickrun='', logger='', y=None):
+    def fit(self, X, user='', activity='', data_dir='', quickrun='', logger='', index='', y=None):
         """Estimate model parameters with the EM algorithm.
 
         A initialization step is performed before entering the
@@ -683,7 +687,8 @@ class _GMMBase(BaseEstimator):
         -------
         self
         """
-        self._fit(X, user, activity, data_dir, quickrun, logger, y)
+        self._fit(X, user=user, activity=activity, data_dir=data_dir, quickrun=quickrun, logger=logger, index=index,
+                  y=y)
         return self
 
     def _do_mstep(self, X, responsibilities, params, min_covar=0):
