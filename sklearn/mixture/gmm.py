@@ -25,6 +25,10 @@ from ..utils import check_random_state, check_array, deprecated
 from ..utils.extmath import logsumexp
 from ..utils.validation import check_is_fitted
 from .. import cluster
+import os
+import string
+from datetime import datetime
+from sklearn.externals import joblib
 
 from sklearn.externals.six.moves import zip
 
@@ -455,7 +459,7 @@ class _GMMBase(BaseEstimator):
         """
         return self._fit(X, y).argmax(axis=1)
 
-    def _fit(self, X, y=None, do_prediction=False):
+    def _fit(self, X, user, activity, data_dir, quickrun, logger, y=None, do_prediction=False):
         """Estimate model parameters with the EM algorithm.
 
         A initialization step is performed before entering the
@@ -478,8 +482,8 @@ class _GMMBase(BaseEstimator):
         """
 
         # initialization step
-        X = check_array(X, dtype=np.float64, ensure_min_samples=2,
-                        estimator=self)
+        # X = check_array(X, dtype=np.float64, ensure_min_samples=2,
+        #                estimator=self)
         if X.shape[0] < self.n_components:
             raise ValueError(
                 'GMM estimation with %s components, but got only %s samples' %
@@ -495,26 +499,103 @@ class _GMMBase(BaseEstimator):
                 print('Initialization ' + str(init + 1))
                 start_init_time = time()
 
-            if 'm' in self.init_params or not hasattr(self, 'means_'):
-                self.means_ = cluster.KMeans(
-                    n_clusters=self.n_components,
-                    random_state=self.random_state).fit(X).cluster_centers_
+            run_kmeans_cov = True
+            filename = ''
+            filepath = ''
+
+            # list all the files where the sensordata is stored
+            kmeans_cov_dir = data_dir
+
+            if 'm' in self.init_params or not hasattr(self, "means_"):
+
+                if quickrun:
+                    if os.path.exists(kmeans_cov_dir):
+                        dataset_files = os.listdir(kmeans_cov_dir)
+                        # if file with the same activity exists, do not run kmeans
+                        for data_file in dataset_files:
+                            if ('.npy' not in data_file) and (activity in data_file) and (user in data_file) and \
+                                    ('kmeans' in data_file):
+                                run_kmeans_cov = False
+                                filename = data_file
+                                filepath = os.path.join(kmeans_cov_dir, filename)
+
+                if run_kmeans_cov:
+                    logger.getLogger('tab.regular.time').info('starting training k-means model')
+                    kmeans = cluster.KMeans(n_clusters=self.n_components, n_jobs=-1)
+                    # logger.getLogger('tab.regular').info('running \'MiniBatchKMeans\'')
+                    # kmeans = cluster.MiniBatchKMeans(n_clusters=self.n_components, batch_size=400)
+                    kmeans.fit(X)
+                    logger.getLogger('tab.regular.time').info('finished training k-means model')
+
+                    if quickrun:
+                        filename = 'kmeans' + '_' + user + '_' + activity + '_' + datetime.now().strftime(
+                            '%Y%m%d%H%M%S')
+                        logger.getLogger('tab.regular.time').info('kmeans object saved as {0}'.format(filename))
+                        # save the file
+                        filepath = os.path.join(kmeans_cov_dir, filename)
+
+                        if not os.path.exists(kmeans_cov_dir):
+                            os.mkdir(kmeans_cov_dir)
+                        joblib.dump(kmeans, filepath)
+
+                # load existing file
+                else:
+                    logger.getLogger('tab.regular.time').info('loading k-means object {0}'.format(filename))
+                    kmeans = joblib.load(filepath)
+                    logger.getLogger('tab.regular.time').info('finished loading k-means object')
+
+                if kmeans == '':
+                    logger.getLogger('tab.regular').error('Error while loading kmeans object')
+                    exit(1)
+
+                self.means_ = kmeans.cluster_centers_
+
                 if self.verbose > 1:
                     print('\tMeans have been initialized.')
 
             if 'w' in self.init_params or not hasattr(self, 'weights_'):
-                self.weights_ = np.tile(1.0 / self.n_components,
-                                        self.n_components)
+
+                if quickrun:
+                    n_filename = string.replace(filepath, 'kmeans', 'weights')
+
+                if run_kmeans_cov:
+                    logger.getLogger('tab.regular.time').info('starting calculating weights')
+
+                    self.weights_ = np.tile(1.0 / self.n_components, self.n_components)
+                    logger.getLogger('tab.regular.time').info('finished calculating weights')
+
+                    if quickrun:
+                        if not os.path.exists(kmeans_cov_dir):
+                            os.mkdir(kmeans_cov_dir)
+                        joblib.dump(cv, n_filename)
+
                 if self.verbose > 1:
                     print('\tWeights have been initialized.')
 
-            if 'c' in self.init_params or not hasattr(self, 'covars_'):
-                cv = np.cov(X.T) + self.min_covar * np.eye(X.shape[1])
+            if 'c' in self.init_params or not hasattr(self, "covars_"):
+
+                if quickrun:
+                    n_filename = string.replace(filepath, 'kmeans', 'cov')
+
+                if run_kmeans_cov:
+                    logger.getLogger('tab.regular.time').info('starting calculating covariances')
+                    cv = np.cov(X.T)
+                    logger.getLogger('tab.regular.time').info('finished calculating covariances')
+                    if quickrun:
+                        if not os.path.exists(kmeans_cov_dir):
+                            os.mkdir(kmeans_cov_dir)
+                        joblib.dump(cv, n_filename)
+                else:
+                    logger.getLogger('tab.regular.time').info('starting loading covs object {0}'.format(n_filename))
+                    cv = joblib.load(n_filename)
+                    logger.getLogger('tab.regular.time').info('finished loading covs object {0}'.format(n_filename))
+
                 if not cv.shape:
                     cv.shape = (1, 1)
                 self.covars_ = \
                     distribute_covar_matrix_to_match_covariance_type(
                         cv, self.covariance_type, self.n_components)
+
                 if self.verbose > 1:
                     print('\tCovariance matrices have been initialized.')
 
@@ -583,7 +664,7 @@ class _GMMBase(BaseEstimator):
 
         return responsibilities
 
-    def fit(self, X, y=None):
+    def fit(self, X, user='', activity='', data_dir='', quickrun='', logger='', y=None):
         """Estimate model parameters with the EM algorithm.
 
         A initialization step is performed before entering the
@@ -602,7 +683,7 @@ class _GMMBase(BaseEstimator):
         -------
         self
         """
-        self._fit(X, y)
+        self._fit(X, user, activity, data_dir, quickrun, logger, y)
         return self
 
     def _do_mstep(self, X, responsibilities, params, min_covar=0):
